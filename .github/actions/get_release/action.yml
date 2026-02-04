@@ -1,0 +1,54 @@
+name: "Get latests release of a repository"
+inputs:
+  repository:
+     required: true
+     description: "The URL of the repository to be checked."
+
+outputs:
+  version:
+    description: "The tag of the latest release."
+    value: ${{ steps.release.outputs.version }}
+  name:
+    description: "The name of the latest release."
+    value: ${{ steps.release.outputs.name }}
+  body:
+    description: "The desciption of the latest release."
+    value: ${{ steps.release.outputs.body }}
+  url:
+    description: "The URL linking the release."
+    value: ${{ steps.release.outputs.url }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Extract github repo
+      id: gh-repo
+      run: |
+        URL=$(echo ${{ inputs.repository }} | sed 's/^.*github\.com\/\([[:alnum:]\-]\+\/[[:alnum:]\-]\+\)\/\?$/\1/;t;Q1')
+        echo "value=$URL" >> $GITHUB_OUTPUT
+      shell: bash
+
+    - name: Get latest release
+      id: release
+      run: |
+        RELEASE=$(curl -sL https://api.github.com/repos/${{ steps.gh-repo.outputs.value }}/releases/latest)
+        TAG=$(echo -E "$RELEASE" | jq -r '.tag_name')
+        NAME=$(echo -E "$RELEASE" | jq -r '.name')
+        URL=$(echo -E "$RELEASE" | jq -r '.html_url')
+        BODY=$(echo -E "$RELEASE" | jq -r '.body')
+        EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+        echo "version=$TAG" >> $GITHUB_OUTPUT
+        echo "name=$NAME" >> $GITHUB_OUTPUT
+        echo "body<<$EOF" >> $GITHUB_OUTPUT
+        echo "$BODY" >> $GITHUB_OUTPUT
+        echo "$EOF" >> $GITHUB_OUTPUT
+        echo "url=$URL" >> $GITHUB_OUTPUT
+      shell: bash
+
+    - name: Test output
+      run: |
+        if [ -z "${{ steps.release.outputs.version }}" ] || [ "${{ steps.release.outputs.version }}" = "null" ]; then
+          echo "Error. Release not found."
+          exit 1
+        fi
+      shell: bash

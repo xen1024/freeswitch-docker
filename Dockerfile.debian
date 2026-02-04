@@ -1,0 +1,102 @@
+FROM debian:12
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV FS_BRANCH=v1.10
+
+# ----------------------------------------------------
+# Base build dependencies
+# ----------------------------------------------------
+RUN apt-get update && apt-get install -y \
+    git \
+    build-essential \
+    pkg-config \
+    autoconf \
+    automake \
+    libtool \
+    cmake \
+    libssl-dev \
+    libcurl4-openssl-dev \
+    libpcre3-dev \
+    libspeex-dev \
+    libspeexdsp-dev \
+    libldns-dev \
+    libedit-dev \
+    libsqlite3-dev \
+    libopus-dev \
+    libsndfile1-dev \
+    libjpeg-dev \
+    liblua5.2-dev \
+    libavformat-dev \
+    libswscale-dev \
+    libavcodec-dev \
+    libavutil-dev \
+    libyuv-dev \
+    libvpx-dev \
+    libpq-dev \
+    unixodbc-dev \
+    libxml2-dev \
+    libtiff-dev \
+    libgsm1-dev \
+    ca-certificates \
+    wget \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /usr/src
+
+# ----------------------------------------------------
+# Build & install spandsp3 (fax / T.38)
+# ----------------------------------------------------
+RUN git clone https://github.com/freeswitch/spandsp.git \
+    && cd spandsp \
+    && ./bootstrap.sh \
+    && ./configure \
+    && make -j$(nproc) \
+    && make install \
+    && ldconfig
+
+# ----------------------------------------------------
+# Build & install sofia-sip (>= 1.13.17)
+# ----------------------------------------------------
+RUN git clone https://github.com/freeswitch/sofia-sip.git \
+    && cd sofia-sip \
+    && ./bootstrap.sh \
+    && ./configure \
+    && make -j$(nproc) \
+    && make install \
+    && ldconfig
+
+# ----------------------------------------------------
+# Clone FreeSWITCH
+# ----------------------------------------------------
+RUN git clone -b ${FS_BRANCH} https://github.com/signalwire/freeswitch.git
+
+WORKDIR /usr/src/freeswitch
+
+# ----------------------------------------------------
+# Build FreeSWITCH
+# ----------------------------------------------------
+RUN ./bootstrap.sh -j \
+    && ./configure \
+    && make -j$(nproc) \
+    && make install \
+    && make sounds-install \
+    && make moh-install
+
+# ----------------------------------------------------
+# Runtime user
+# ----------------------------------------------------
+RUN useradd -r -s /sbin/nologin freeswitch \
+    && chown -R freeswitch:freeswitch /usr/local/freeswitch
+
+# ----------------------------------------------------
+# Expose ports
+# ----------------------------------------------------
+EXPOSE 5060/udp 5060/tcp \
+       5080/udp 5080/tcp \
+       8021/tcp \
+       16384-32768/udp
+
+USER freeswitch
+
+CMD ["/usr/local/freeswitch/bin/freeswitch", "-u", "freeswitch", "-g", "freeswitch", "-nonat"]

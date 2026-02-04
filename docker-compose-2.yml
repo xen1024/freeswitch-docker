@@ -1,0 +1,15 @@
+services:
+  freeswitch:
+    build:
+      context: .
+      dockerfile: Dockerfile.debian
+    container_name: freeswitch1
+    restart: always
+    cap_add:  # Enable RT features
+      - SYS_NICE
+    network_mode: "host"
+    volumes:
+      - ../freeswitch:/freeswitch
+#      - ../freeswitch10:/freeswitch10
+#      - '/mnt/docker/freeswitch2/configs/:/etc/freeswitch/'
+#      - '/mnt/docker/freeswitch2/logs/:/var/log/freeswitch/'

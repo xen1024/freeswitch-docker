@@ -1,0 +1,217 @@
+# FreeSWITCH Dockerfile - Build from Source (No Fax Support)
+# Faster build without SpanDSP/fax modules
+
+# Stage 1: Build stage
+FROM debian:bookworm AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies (without SpanDSP)
+RUN apt-get update && apt-get install -y \
+    # Build essentials
+    build-essential \
+    cmake \
+    automake \
+    autoconf \
+    libtool \
+    pkg-config \
+    git \
+    wget \
+    # FreeSWITCH dependencies
+    libssl-dev \
+    zlib1g-dev \
+    libdb-dev \
+    libncurses5-dev \
+    libexpat1-dev \
+    libgdbm-dev \
+    bison \
+    libbison-dev \
+    libcurl4-openssl-dev \
+    libpcre3-dev \
+    libspeex-dev \
+    libspeexdsp-dev \
+    libldns-dev \
+    libedit-dev \
+    libtiff5-dev \
+    yasm \
+    # Codecs
+    libopus-dev \
+    libsndfile1-dev \
+    libavformat-dev \
+    libswscale-dev \
+    # Database support
+    libpq-dev \
+    libmariadb-dev \
+    libmariadb-dev-compat \
+    unixodbc-dev \
+    # SQLite
+    libsqlite3-dev \
+    # Media
+    libmp3lame-dev \
+    libshout3-dev \
+    libmpg123-dev \
+    # Lua support
+    liblua5.2-dev \
+    # Python support (optional)
+    python3-dev \
+    # SRTP
+    libsrtp2-dev \
+    # XML
+    libxml2-dev \
+    # Other
+    uuid-dev \
+    libasound2-dev \
+    libldap2-dev \
+    libpng-dev \
+    libjpeg-dev \
+    libfreetype6-dev \
+    # Sofia-SIP dependencies
+    libsofia-sip-ua-dev \
+    libsofia-sip-ua-glib-dev \
+    # Video
+    libx264-dev \
+    libvpx-dev \
+    # Soundtouch
+    libsoundtouch-dev \
+    # Additional tools
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set build arguments
+ARG FREESWITCH_VERSION=v1.10.12
+ARG MAKE_JOBS=4
+
+# Clone FreeSWITCH source
+WORKDIR /usr/src
+RUN git clone https://github.com/signalwire/freeswitch.git freeswitch && \
+    cd freeswitch && \
+    git checkout ${FREESWITCH_VERSION}
+
+WORKDIR /usr/src/freeswitch
+
+# Bootstrap the build
+RUN ./bootstrap.sh -j
+
+# Configure modules to build (exclude fax modules)
+RUN sed -i 's|#applications/mod_av|applications/mod_av|' modules.conf && \
+    sed -i 's|#applications/mod_callcenter|applications/mod_callcenter|' modules.conf && \
+    sed -i 's|#formats/mod_shout|formats/mod_shout|' modules.conf && \
+    sed -i 's|#formats/mod_opusfile|formats/mod_opusfile|' modules.conf && \
+    sed -i 's|#codecs/mod_opus|codecs/mod_opus|' modules.conf && \
+    # Disable fax modules
+    sed -i 's|^applications/mod_spandsp|#applications/mod_spandsp|' modules.conf && \
+    sed -i 's|^applications/mod_fax|#applications/mod_fax|' modules.conf
+
+# Configure FreeSWITCH without SpanDSP
+RUN ./configure \
+    --prefix=/usr/local/freeswitch \
+    --enable-core-pgsql-support \
+    --enable-core-odbc-support \
+    --enable-zrtp \
+    --enable-srtp \
+    --with-openssl \
+    --with-python3 \
+    --without-erlang
+
+# Build FreeSWITCH
+RUN make -j${MAKE_JOBS}
+
+# Install FreeSWITCH
+RUN make install
+
+# Install sounds and music on hold
+RUN make cd-sounds-install cd-moh-install
+
+# Stage 2: Runtime stage
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    # Runtime libraries
+    libssl3 \
+    libcurl4 \
+    libpcre3 \
+    libspeex1 \
+    libspeexdsp1 \
+    libldns3 \
+    libedit2 \
+    libtiff6 \
+    libopus0 \
+    libsndfile1 \
+    libavformat59 \
+    libswscale6 \
+    libpq5 \
+    libmariadb3 \
+    unixodbc \
+    libsqlite3-0 \
+    libmp3lame0 \
+    libshout3 \
+    libmpg123-0 \
+    liblua5.2-0 \
+    libsrtp2-1 \
+    libxml2 \
+    uuid-runtime \
+    libasound2 \
+    libldap-2.5-0 \
+    libpng16-16 \
+    libjpeg62-turbo \
+    libfreetype6 \
+    libsofia-sip-ua0 \
+    libtiff6 \
+    libx264-164 \
+    libvpx7 \
+    libsoundtouch1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy FreeSWITCH from builder stage
+COPY --from=builder /usr/local/freeswitch /usr/local/freeswitch
+
+# Create symbolic links for easier access
+RUN ln -sf /usr/local/freeswitch/bin/freeswitch /usr/bin/freeswitch && \
+    ln -sf /usr/local/freeswitch/bin/fs_cli /usr/bin/fs_cli
+
+# Create freeswitch user and group
+RUN groupadd -r freeswitch && \
+    useradd -r -g freeswitch -d /usr/local/freeswitch -s /bin/bash freeswitch
+
+# Set proper permissions
+RUN chown -R freeswitch:freeswitch /usr/local/freeswitch
+
+# Create necessary directories
+RUN mkdir -p /var/log/freeswitch /var/run/freeswitch /var/cache/freeswitch && \
+    chown -R freeswitch:freeswitch /var/log/freeswitch /var/run/freeswitch /var/cache/freeswitch
+
+# Expose ports
+EXPOSE 8021/tcp
+EXPOSE 5060/tcp 5060/udp
+EXPOSE 5080/tcp 5080/udp
+EXPOSE 5061/tcp 5061/udp
+EXPOSE 5081/tcp 5081/udp
+EXPOSE 7443/tcp
+EXPOSE 8080/tcp 8081/tcp
+EXPOSE 64535-65535/udp
+EXPOSE 16384-32768/udp
+
+# Volumes for configuration and data persistence
+VOLUME ["/usr/local/freeswitch/conf"]
+VOLUME ["/usr/local/freeswitch/db"]
+VOLUME ["/usr/local/freeswitch/recordings"]
+VOLUME ["/usr/local/freeswitch/storage"]
+VOLUME ["/var/log/freeswitch"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD /usr/bin/fs_cli -x "status" | grep -q "^UP" || exit 1
+
+# Switch to freeswitch user
+USER freeswitch
+
+# Set working directory
+WORKDIR /usr/local/freeswitch
+
+# Run FreeSWITCH in foreground
+CMD ["/usr/bin/freeswitch", "-nonat", "-nf", "-c"]

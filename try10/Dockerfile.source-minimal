@@ -1,0 +1,167 @@
+# FreeSWITCH Minimal Build from Source
+# Smallest possible image with only essential SIP functionality
+
+# Stage 1: Build stage
+FROM debian:bookworm AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install minimal build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    automake \
+    autoconf \
+    libtool \
+    pkg-config \
+    git \
+    wget \
+    libssl-dev \
+    zlib1g-dev \
+    libdb-dev \
+    libncurses5-dev \
+    libexpat1-dev \
+    libgdbm-dev \
+    bison \
+    libcurl4-openssl-dev \
+    libpcre3-dev \
+    libspeex-dev \
+    libspeexdsp-dev \
+    libedit-dev \
+    libsqlite3-dev \
+    uuid-dev \
+    libsofia-sip-ua-dev \
+    libsrtp2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG FREESWITCH_VERSION=v1.10.12
+ARG MAKE_JOBS=4
+
+# Build SpanDSP from source (optional - only if you need fax support)
+# Comment out if you don't need mod_spandsp
+WORKDIR /usr/src
+RUN git clone https://github.com/freeswitch/spandsp.git && \
+    cd spandsp && \
+    ./bootstrap.sh && \
+    ./configure --prefix=/usr && \
+    make -j${MAKE_JOBS} && \
+    make install && \
+    ldconfig
+
+WORKDIR /usr/src
+RUN git clone https://github.com/signalwire/freeswitch.git freeswitch && \
+    cd freeswitch && \
+    git checkout ${FREESWITCH_VERSION}
+
+WORKDIR /usr/src/freeswitch
+
+# Bootstrap
+RUN ./bootstrap.sh -j
+
+# Create minimal modules.conf
+RUN cat > modules.conf << 'EOF'
+# Minimal FreeSWITCH modules configuration
+# Loggers
+loggers/mod_console
+loggers/mod_logfile
+
+# Core applications
+applications/mod_commands
+applications/mod_dptools
+
+# Dialplan
+dialplans/mod_dialplan_xml
+
+# Codecs (only G.711 and G.722)
+codecs/mod_g711
+codecs/mod_g722
+
+# Endpoint
+endpoints/mod_sofia
+
+# Formats
+formats/mod_local_stream
+formats/mod_native_file
+formats/mod_sndfile
+formats/mod_tone_stream
+
+# Event Socket
+event_handlers/mod_event_socket
+
+# Say
+say/mod_say_en
+EOF
+
+# Configure with minimal options
+RUN ./configure \
+    --prefix=/usr/local/freeswitch \
+    --disable-core-odbc-support \
+    --disable-core-pgsql-support \
+    --enable-zrtp \
+    --with-openssl
+
+# Build
+RUN make -j${MAKE_JOBS}
+
+# Install
+RUN make install
+
+# Install only minimal sounds (prompts only, no music)
+RUN make sounds-install
+
+# Stage 2: Minimal runtime
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install only required runtime libraries
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3 \
+    libcurl4 \
+    libpcre3 \
+    libspeex1 \
+    libspeexdsp1 \
+    libedit2 \
+    libsqlite3-0 \
+    uuid-runtime \
+    libsofia-sip-ua0 \
+    libsrtp2-1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy SpanDSP from builder (if built)
+COPY --from=builder /usr/lib/libspandsp* /usr/lib/ 2>/dev/null || true
+RUN ldconfig
+
+# Copy only what we need
+COPY --from=builder /usr/local/freeswitch/bin /usr/local/freeswitch/bin
+COPY --from=builder /usr/local/freeswitch/lib /usr/local/freeswitch/lib
+COPY --from=builder /usr/local/freeswitch/mod /usr/local/freeswitch/mod
+COPY --from=builder /usr/local/freeswitch/conf /usr/local/freeswitch/conf
+COPY --from=builder /usr/local/freeswitch/sounds /usr/local/freeswitch/sounds
+
+# Create symlinks
+RUN ln -sf /usr/local/freeswitch/bin/freeswitch /usr/bin/freeswitch && \
+    ln -sf /usr/local/freeswitch/bin/fs_cli /usr/bin/fs_cli
+
+# Create user
+RUN groupadd -r freeswitch && \
+    useradd -r -g freeswitch -d /usr/local/freeswitch -s /bin/bash freeswitch
+
+# Create directories
+RUN mkdir -p /var/log/freeswitch /var/run/freeswitch /var/cache/freeswitch && \
+    chown -R freeswitch:freeswitch /usr/local/freeswitch /var/log/freeswitch /var/run/freeswitch /var/cache/freeswitch
+
+# Expose minimal ports
+EXPOSE 8021/tcp 5060/tcp 5060/udp 64535-65535/udp
+
+VOLUME ["/usr/local/freeswitch/conf"]
+VOLUME ["/var/log/freeswitch"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD /usr/bin/fs_cli -x "status" | grep -q "^UP" || exit 1
+
+USER freeswitch
+WORKDIR /usr/local/freeswitch
+
+CMD ["/usr/bin/freeswitch", "-nonat", "-nf", "-c"]

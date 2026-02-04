@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  freeswitch-source:
+    build:
+      context: .
+      dockerfile: Dockerfile.source
+      args:
+        FREESWITCH_VERSION: v1.10.12
+        MAKE_JOBS: 4
+    image: freeswitch-source:latest
+    container_name: freeswitch-source
+    restart: unless-stopped
+    
+    # Use host networking for best performance
+    network_mode: "host"
+    
+    # Alternative bridge mode configuration
+    # ports:
+    #   - "8021:8021/tcp"
+    #   - "5060:5060/tcp"
+    #   - "5060:5060/udp"
+    #   - "5080:5080/tcp"
+    #   - "5080:5080/udp"
+    #   - "5061:5061/tcp"
+    #   - "5081:5081/tcp"
+    #   - "7443:7443/tcp"
+    #   - "8080:8080/tcp"
+    #   - "64535-65535:64535-65535/udp"
+    
+    volumes:
+      # Configuration
+      - ./freeswitch/conf:/usr/local/freeswitch/conf
+      # Database
+      - ./freeswitch/db:/usr/local/freeswitch/db
+      # Recordings
+      - ./freeswitch/recordings:/usr/local/freeswitch/recordings
+      # Storage
+      - ./freeswitch/storage:/usr/local/freeswitch/storage
+      # Logs
+      - ./freeswitch/logs:/var/log/freeswitch
+      # Scripts (optional)
+      - ./freeswitch/scripts:/usr/local/freeswitch/scripts
+    
+    environment:
+      - TZ=UTC
+    
+    # Capabilities for network operations
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_NICE
+      - SYS_RESOURCE
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+        reservations:
+          cpus: '2'
+          memory: 2G
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "fs_cli", "-x", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+# Uncomment to add a web interface
+#  freeswitch-gui:
+#    image: nginx:alpine
+#    container_name: freeswitch-gui
+#    restart: unless-stopped
+#    ports:
+#      - "80:80"
+#    volumes:
+#      - ./web:/usr/share/nginx/html:ro
+#    depends_on:
+#      - freeswitch-source

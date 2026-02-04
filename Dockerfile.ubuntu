@@ -1,0 +1,208 @@
+FROM ubuntu:24.04 AS base
+
+ARG FREESWITCH_VERSION="v1.10.12"
+ARG SOFIA_VERSION="v1.13.17"
+ARG LIBKS_VERSION="v2.0.6"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+FROM base AS deps
+
+RUN \
+  apt-get update \
+  && apt-get install -y --no-install-recommends \
+    git \
+    ca-certificates 
+#  && rm -rf /var/lib/apt/lists/*
+
+RUN \
+  git clone --depth 1 --branch "${FREESWITCH_VERSION}" https://github.com/signalwire/freeswitch /freeswitch \
+  && rm -rf /freeswitch/.git \
+  && git clone --depth 1 --branch "${SOFIA_VERSION}" https://github.com/freeswitch/sofia-sip /libdeps/sofia-sip \
+  && rm -rf /libdeps/sofia-sip/.git \
+  && git clone --depth 1 --branch "${LIBKS_VERSION}" https://github.com/signalwire/libks /libdeps/libks \
+  && rm -rf /libdeps/libks/.git
+
+
+FROM base AS builder-sofia
+
+COPY --from=deps /libdeps/sofia-sip ./libdeps/sofia-sip
+COPY patches/sofia-sip/. ./patches
+
+RUN \
+  apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential \
+    autoconf \
+    automake \
+    libtool \
+    libssl-dev \
+    libglib2.0-dev \
+    libsctp-dev \
+    pkg-config 
+#  && rm -rf /var/lib/apt/lists/*
+
+RUN \
+  cd ./libdeps/sofia-sip \
+  && for i in /patches/*.patch; do [ -f "$i" ] && patch -p1 < $i || true; done \
+  && ./bootstrap.sh \
+  && ./configure --prefix=/usr --enable-sctp --with-openssl --without-doxygen --enable-static=no \
+  && make -j$(nproc --all) \
+  && make DESTDIR=/build install
+
+
+FROM base AS builder-libks
+
+COPY --from=deps /libdeps/libks ./libdeps/libks
+
+RUN \
+  apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    libssl-dev \
+    libuuid1 \
+    uuid-dev \
+    pkg-config 
+#  && rm -rf /var/lib/apt/lists/*
+
+RUN \
+  cd ./libdeps/libks \
+  && cmake -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release . \
+  && make -j$(nproc --all) \
+  && make DESTDIR=/build install
+
+
+FROM base AS builder-freeswitch
+
+COPY --from=deps /freeswitch/ ./app
+#COPY modules.conf ./app
+COPY --from=builder-sofia /build/. .
+COPY --from=builder-libks /build/. .
+COPY patches/freeswitch/. ./patches
+
+RUN \
+  apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential gdb libtool-bin git \
+    autoconf \
+    automake \
+    libtool \
+    pkg-config \
+    libjpeg-turbo8-dev \
+    libspandsp-dev \
+    zlib1g-dev \
+    libsqlite3-dev \
+    libcurl4-openssl-dev \
+    libpcre3-dev \
+    libspeex-dev \
+    libspeexdsp-dev \
+# mod_enum
+    libldns-dev \
+    libedit-dev \
+    diffutils \
+    nasm \
+    python3-dev \
+    python3-setuptools \
+    linux-libc-dev \
+    uuid-dev \
+    unixodbc-dev \
+    libpq-dev \
+    libmariadb-dev \
+    libmpg123-dev \
+    libtiff-dev \
+    flite1-dev \
+    liblua5.3-dev \
+    libperl-dev \
+    libopus-dev \
+    portaudio19-dev \
+# mod_sangoma_codec - may not be available on Ubuntu
+#    sngtc_client-dev \
+# mod_shout
+    libshout3-dev \
+    libmp3lame-dev \
+# mod_snmp
+    libsnmp-dev \
+# mod_sndfile
+    libsndfile1-dev 
+#  && rm -rf /var/lib/apt/lists/*
+
+# RUN \
+#   cd /app \
+#   && for i in /patches/*.patch; do [ -f "$i" ] && patch -p1 < $i || true; done \
+#   && ./bootstrap.sh -j \
+#   && ./configure \
+#     --prefix=/usr \
+#     --sysconfdir=/etc \
+#     --localstatedir=/var \
+#     # follow Redhat/SUSE package layout
+#     --enable-fhs \
+#     --with-scriptdir=/etc/freeswitch/scripts \
+#     --with-rundir=/run/freeswitch \
+#     --with-logfiledir=/var/log/freeswitch \
+#     --with-dbdir=/var/spool/freeswitch/db \
+#     --with-certsdir=/etc/freeswitch/certs \
+#     --with-python3 \
+#     --enable-core-odbc-support \
+#     --enable-core-pgsql-support \
+#     --enable-zrtp \
+#     --enable-system-lua \
+#   && make -j$(nproc) \
+#   && make install \
+#   && make DESTDIR=/build install \
+#   && ldd $(which freeswitch) | cut -d" " -f3 | xargs tar --dereference -cf /build/libs.tar
+
+#  && make DESTDIR=/build samples-conf \
+#  && make DESTDIR=/build cd-moh-install \
+#  && make DESTDIR=/build cd-sounds-install \
+
+RUN git clone https://github.com/freeswitch/spandsp && \
+  cd spandsp && \
+  ./bootstrap.sh && \
+  ./configure && \
+  make && \
+  make install
+
+#FROM base AS runner
+
+ARG WORKER_USER_ID=499
+
+#COPY --from=builder-freeswitch /build/. .
+COPY --from=builder-libks /build/. .
+
+RUN \
+  groupadd -g ${WORKER_USER_ID} freeswitch \
+  && useradd -u ${WORKER_USER_ID} -g freeswitch -m -s /bin/bash freeswitch \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+    bash \
+    curl \
+    openssl \
+    libcurl4 \
+    libidn12 \
+    libidn2-0 \
+    libidn2-dev \
+    libopus0 \
+    libsndfile1 \
+    liblua5.3-0 \
+    libpq5 \
+    libldns3 
+#  && rm -rf /var/lib/apt/lists/*
+#  && tar -xf libs.tar \
+#  && rm libs.tar
+
+EXPOSE 8021/tcp
+EXPOSE 5060/tcp 5060/udp 5080/tcp 5080/udp
+EXPOSE 5061/tcp 5061/udp 5081/tcp 5081/udp
+EXPOSE 5066/tcp
+EXPOSE 7443/tcp
+EXPOSE 8081/tcp 8082/tcp
+EXPOSE 64535-65535/udp
+EXPOSE 16384-32768/udp
+
+HEALTHCHECK --interval=15s --timeout=5s \
+    CMD  fs_cli -x status | grep -q ^UP || exit 1
+
+# USER freeswitch
+#CMD ["/usr/bin/freeswitch"]
+CMD ["tail", "-f", "/dev/null"]
