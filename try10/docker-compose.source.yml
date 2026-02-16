@@ -29,6 +29,9 @@ services:
     #   - "64535-65535:64535-65535/udp"
     
     volumes:
+      - ../../freeswitch:/freeswitch
+      # VSCode configuration
+      - ../../freeswitch/.vscode:/usr/src/freeswitch/.vscode
       # Configuration
       - ./freeswitch/conf:/usr/local/freeswitch/conf
       # Database

@@ -1,13 +1,19 @@
 # FreeSWITCH Dockerfile - Build from Source on Debian
-# Multi-stage build for optimal image size
+# Single-stage build
 
-# Stage 1: Build stage
-FROM debian:bookworm AS builder
+FROM debian:bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install build dependencies
+# Install build and runtime dependencies
 RUN apt-get update && apt-get install -y \
+    sudo \
+    # Debugging tools for VSCode
+    gdb \
+    lldb \
+    valgrind \
+    strace \
+    ltrace \
     # Build essentials
     build-essential \
     cmake \
@@ -76,7 +82,9 @@ RUN apt-get update && apt-get install -y \
     libsoundtouch-dev \
     # Additional tools
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    curl \
+    uuid-runtime 
+#    && rm -rf /var/lib/apt/lists/*
 
 # Set build arguments
 ARG FREESWITCH_VERSION=v1.10.12
@@ -124,6 +132,8 @@ WORKDIR /usr/src/freeswitch
 # Bootstrap the build
 RUN ./bootstrap.sh -j
 
+RUN chmod oa+w -R /usr/src/
+
 # Configure modules to build
 # Edit modules.conf to enable/disable specific modules
 RUN sed -i 's|#applications/mod_av|applications/mod_av|' modules.conf && \
@@ -136,8 +146,8 @@ RUN sed -i 's|#applications/mod_av|applications/mod_av|' modules.conf && \
     # Disable mod_spandsp (API incompatibility with current spandsp - affects fax/T.38)
     sed -i 's|applications/mod_spandsp|#applications/mod_spandsp|' modules.conf
 
-# Configure FreeSWITCH
-RUN ./configure \
+# Configure FreeSWITCH with debug flags
+RUN CFLAGS="-O0 -g" CXXFLAGS="-O0 -g" ./configure \
     --prefix=/usr/local/freeswitch \
     --enable-core-pgsql-support \
     --enable-core-odbc-support \
@@ -153,63 +163,11 @@ RUN make -j${MAKE_JOBS}
 RUN make install
 
 # Install sounds and music on hold (optional, comment out to reduce size)
-RUN make cd-sounds-install cd-moh-install
+#RUN make cd-sounds-install cd-moh-install
 
-# Stage 2: Runtime stage
-FROM debian:bookworm-slim
+# Clean up build sources to reduce image size
+#RUN rm -rf /usr/src/*
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install runtime dependencies only
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    # Runtime libraries
-    libssl3 \
-    libcurl4 \
-    libpcre3 \
-    libspeex1 \
-    libspeexdsp1 \
-    libldns3 \
-    libedit2 \
-    libtiff6 \
-    libopus0 \
-    libopusfile0 \
-    libsndfile1 \
-    libavformat59 \
-    libswscale6 \
-    libpq5 \
-    libmariadb3 \
-    unixodbc \
-    libsqlite3-0 \
-    libmp3lame0 \
-    libshout3 \
-    libmpg123-0 \
-    liblua5.2-0 \
-    libsrtp2-1 \
-    libxml2 \
-    uuid-runtime \
-    libasound2 \
-    libldap-2.5-0 \
-    libpng16-16 \
-    libjpeg62-turbo \
-    libfreetype6 \
-    libglib2.0-0 \
-    libtiff6 \
-    libx264-164 \
-    libvpx7 \
-    libsoundtouch1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy libraries from builder and update cache
-RUN --mount=from=builder,source=/usr,target=/builder-usr \
-    find /builder-usr/lib -name 'libspandsp*' -exec cp -a {} /usr/lib/ \; && \
-    find /builder-usr/lib -name 'libsofia-sip-ua*' -exec cp -a {} /usr/lib/ \; && \
-    find /builder-usr/lib -name 'libks*' -exec cp -a {} /usr/lib/ \; && \
-    ldconfig
-
-# Copy FreeSWITCH from builder stage
-COPY --from=builder /usr/local/freeswitch /usr/local/freeswitch
 
 # Create symbolic links for easier access
 RUN ln -sf /usr/local/freeswitch/bin/freeswitch /usr/bin/freeswitch && \
@@ -217,7 +175,8 @@ RUN ln -sf /usr/local/freeswitch/bin/freeswitch /usr/bin/freeswitch && \
 
 # Create freeswitch user and group
 RUN groupadd -r freeswitch && \
-    useradd -r -g freeswitch -d /usr/local/freeswitch -s /bin/bash freeswitch
+    useradd -r -g freeswitch -d /usr/local/freeswitch -s /bin/bash freeswitch && \
+    echo "freeswitch ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Set proper permissions
 RUN chown -R freeswitch:freeswitch /usr/local/freeswitch
@@ -225,6 +184,8 @@ RUN chown -R freeswitch:freeswitch /usr/local/freeswitch
 # Create necessary directories
 RUN mkdir -p /var/log/freeswitch /var/run/freeswitch /var/cache/freeswitch && \
     chown -R freeswitch:freeswitch /var/log/freeswitch /var/run/freeswitch /var/cache/freeswitch
+
+#COPY --chown=freeswitch:freeswitch ../../freeswitch/.vscode /usr/local/freeswitch/.vscode
 
 # Expose ports
 EXPOSE 8021/tcp
@@ -255,4 +216,5 @@ USER freeswitch
 WORKDIR /usr/local/freeswitch
 
 # Run FreeSWITCH in foreground
-CMD ["/usr/bin/freeswitch", "-nonat", "-nf", "-c"]
+#CMD ["/usr/bin/freeswitch", "-nonat", "-nf", "-c"]
+CMD ["tail", "-f", "/dev/null"]
